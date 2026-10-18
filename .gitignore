@@ -1,0 +1,4 @@
+/bin/
+/simulator/target/
+.DS_Store
+/data/
