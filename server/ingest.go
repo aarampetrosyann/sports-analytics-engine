@@ -12,6 +12,8 @@ import (
 type Frame struct {
 	Seq     uint64        `json:"seq"`
 	TS      int64         `json:"ts"` // unix ms when the edge produced the frame
+	MT      *int64        `json:"mt"` // match time in ms; absent from older edges
+	Period  int           `json:"period"`
 	Ball    Point         `json:"ball"`
 	Players []PlayerFrame `json:"players"`
 

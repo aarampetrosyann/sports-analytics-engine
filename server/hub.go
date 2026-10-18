@@ -71,8 +71,8 @@ func (h *Hub) remove(c *client) {
 	h.mu.Unlock()
 }
 
-// ServeWS upgrades the request and sends hello() as the first message.
-func (h *Hub) ServeWS(hello func() []byte) http.HandlerFunc {
+// ServeWS upgrades the request and first sends the messages from welcome().
+func (h *Hub) ServeWS(welcome func() [][]byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := h.upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -80,7 +80,9 @@ func (h *Hub) ServeWS(hello func() []byte) http.HandlerFunc {
 			return
 		}
 		c := &client{conn: conn, send: make(chan []byte, sendBuffer)}
-		c.send <- hello()
+		for _, msg := range welcome() {
+			c.send <- msg
+		}
 		h.add(c)
 		log.Printf("ws: client connected from %s (%d total)", r.RemoteAddr, h.Count())
 

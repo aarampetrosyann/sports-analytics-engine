@@ -103,6 +103,8 @@ pub struct World {
     /// Ball is out of play; restart after the timer expires.
     dead: Option<(f32, Restart)>,
     kickoff: bool,
+    /// How long both teams have been in their own halves before a kick-off.
+    kickoff_ready: f32,
     rng: Rng,
 }
 
@@ -144,6 +146,7 @@ impl World {
             receiver: None,
             dead: None,
             kickoff: true,
+            kickoff_ready: 0.0,
             rng,
         }
     }
@@ -273,6 +276,15 @@ impl World {
         if self.hold > 0.0 {
             self.hold -= dt;
         }
+        // Like a referee, wait until both teams are in their own halves.
+        let in_halves = self.players.iter().all(|p| {
+            if p.team == 0 {
+                p.pos.x <= CENTER.x + 0.5
+            } else {
+                p.pos.x >= CENTER.x - 0.5
+            }
+        });
+        self.kickoff_ready = if self.kickoff && in_halves { self.kickoff_ready + dt } else { 0.0 };
 
         match self.owner {
             Some(i) => {
@@ -385,7 +397,7 @@ impl World {
     }
 
     fn try_pickup(&mut self) {
-        if self.hold > 0.0 {
+        if self.hold > 0.0 || (self.kickoff && self.kickoff_ready < 1.0) {
             return;
         }
         let ball = self.ball;

@@ -59,6 +59,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .score .dash { margin: 0 6px; color: var(--muted); }
 .clock { grid-column: 1 / -1; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
 
+.goals {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 12px;
+  margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted);
+}
+.goals:empty { display: none; }
+.goals .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; }
 .card { padding: 12px; border-radius: 10px; background: var(--panel-2); }
 .card h2 {
   margin: 0 0 10px; font-size: 11px; font-weight: 600;
@@ -94,12 +100,14 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .dist-grid td { padding: 2px 0; }
 .dist-grid td:nth-child(2), .dist-grid td:nth-child(3) { text-align: right; }
 .dist-grid td:nth-child(3) { color: var(--muted); }
+.dist-grid tr.off { opacity: 0.4; }
 .num { display: inline-block; min-width: 22px; padding: 0 4px; border-radius: 4px; text-align: center; font-weight: 600; }
 
 .events { list-style: none; margin: 0; padding: 0; max-height: 200px; overflow-y: auto; font-size: 13px; }
 .events li { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--line); }
 .events li:last-child { border-bottom: 0; }
 .events li.empty { color: var(--muted); }
+.events .muted { color: var(--muted); }
 .events time { color: var(--muted); font-variant-numeric: tabular-nums; }
 .tag { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--line); }
 .tag.goal { background: var(--accent); color: #111; }

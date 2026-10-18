@@ -29,6 +29,7 @@ let renderFrames = 0;
 let renderWindow = performance.now();
 let renderFps = 0;
 let socketOpen = false;
+let goals = [];
 
 // ---------------------------------------------------------------- network
 
@@ -55,7 +56,9 @@ function onHello(msg) {
   teams = msg.teams;
   prev = curr = null;
   trail = [];
-  renderEvents(msg.events.slice().reverse(), true);
+  renderEvents((msg.events || []).slice().reverse(), true);
+  goals = msg.goals || [];
+  renderGoals();
   resize();
 }
 
@@ -65,6 +68,8 @@ function onState(msg) {
     prev = null;
     trail = [];
     renderEvents([], true);
+    goals = [];
+    renderGoals();
   } else {
     prev = curr;
   }
@@ -79,7 +84,18 @@ function onState(msg) {
   if (msg.events) {
     for (const ev of msg.events) if (ev.type === 'box_entry') zoneFlash[ev.zone] = now;
     renderEvents(msg.events.slice().reverse(), false);
+    const scored = msg.events.filter((ev) => ev.type === 'goal');
+    if (scored.length) {
+      goals.push(...scored);
+      renderGoals();
+    }
   }
+}
+
+function renderGoals() {
+  $('goals').innerHTML = goals
+    .map((g) => `<li>${teamDot(g.team)}${teams[g.team]} ${fmtClock(g.clock)}</li>`)
+    .join('');
 }
 
 function setConn(state, text) {
@@ -224,6 +240,7 @@ function render(now) {
   ctx.textBaseline = 'middle';
   ctx.font = `600 ${Math.round(r * 1.05)}px ui-sans-serif, system-ui, sans-serif`;
   for (const p of s.players) {
+    if (!p.active) continue; // substituted off
     const x = px(p.x), y = py(p.y);
     if (msg.poss.control && msg.poss.player === p.id) {
       ctx.strokeStyle = '#facc15';
@@ -270,7 +287,7 @@ const teamDot = (t) => `<span class="dot" style="background:${TEAM_COLORS[t]}"><
 function updateHud(msg) {
   $('score-0').textContent = msg.score[0];
   $('score-1').textContent = msg.score[1];
-  $('clock').textContent = fmtClock(msg.clock);
+  $('clock').textContent = `${fmtClock(msg.clock)} · ${msg.period === 2 ? '2nd' : '1st'} half`;
 
   const [home, away] = msg.possPct;
   $('poss-home').style.width = `${home}%`;
@@ -293,7 +310,7 @@ function updateHud(msg) {
     const rows = msg.players
       .filter((pl) => pl.team === team)
       .sort((a, b) => b.dist - a.dist)
-      .map((pl) => `<tr><td><span class="num" style="background:${TEAM_COLORS[team]}">${pl.num}</span></td>`
+      .map((pl) => `<tr${pl.active ? '' : ' class="off" title="Substituted off"'}><td><span class="num" style="background:${TEAM_COLORS[team]}">${pl.num}</span></td>`
         + `<td>${fmtDist(pl.dist)}</td><td>${(pl.speed * 3.6).toFixed(1)} km/h</td></tr>`)
       .join('');
     $(`dist-${team}`).innerHTML = `<tr><th colspan="3">${teams[team]}</th></tr>${rows}`;
@@ -310,9 +327,11 @@ function updateHud(msg) {
 
 function describeEvent(ev) {
   const team = ev.team >= 0 ? teams[ev.team] : 'Unknown';
-  if (ev.type === 'goal') return { tag: 'GOAL', cls: 'goal', text: `${team} score` };
+  if (ev.type === 'goal') {
+    return { tag: 'GOAL', cls: 'goal', text: `${team} score <span class="muted">· confirmed at kick-off ${fmtClock(ev.confirmed)}</span>` };
+  }
   const zone = zones.find((z) => z.name === ev.zone);
-  return { tag: 'BOX', cls: '', text: `Ball into ${zone ? zone.label.toLowerCase() : ev.zone} · ${team} attacking` };
+  return { tag: 'BOX', cls: '', text: `Ball into ${zone ? zone.label.toLowerCase() : ev.zone} · ${team} in possession` };
 }
 
 // Newest events first; `events` must already be newest-first.

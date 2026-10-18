@@ -27,9 +27,18 @@ func main() {
 	go engine.Run(frames)
 
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.Dir(*webDir)))
-	mux.HandleFunc("/ws", hub.ServeWS(engine.Hello))
+	mux.Handle("/", noCache(http.FileServer(http.Dir(*webDir))))
+	mux.HandleFunc("/ws", hub.ServeWS(engine.Welcome))
 
 	log.Printf("http: dashboard on http://localhost%s (serving %s)", *httpAddr, *webDir)
 	log.Fatal(http.ListenAndServe(*httpAddr, mux))
+}
+
+// noCache makes browsers revalidate the dashboard files on every load, so a
+// rebuilt dashboard is never hidden behind a stale cached copy.
+func noCache(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		h.ServeHTTP(w, r)
+	})
 }

@@ -19,7 +19,19 @@ const (
 	// counted towards distance covered.
 	maxPlayerSpeed = 12.0 // m/s
 	goalHalfWidth  = 3.66
-	maxEvents      = 50
+	centerCircle   = 9.15
+	// Kick-off: ball on the centre spot after every player has been in their
+	// own half (with a little tolerance for tracking noise) for koHold. The
+	// hold is on the players, not the ball: tracking systems often lose the
+	// ball during dead time and only pick it up again as it is kicked.
+	koSpotRadius = 1.5
+	koHalfSlack  = 1.0
+	koHold       = 0.5 // s
+	// A kick-off only confirms a goal if the ball was in a goal mouth
+	// shortly before it.
+	mouthDepth  = 0.5   // m beyond/inside the goal line
+	mouthWindow = 120e3 // ms
+	maxEvents   = 50
 	// A sequence number this far below the last one means the edge restarted.
 	seqRestartGap = 100
 )
@@ -47,11 +59,18 @@ var zones = []Zone{
 var teamNames = [2]string{"Home", "Away"}
 
 type Event struct {
-	Type   string `json:"type"` // "box_entry" or "goal"
-	Clock  int64  `json:"clock"`
-	Zone   string `json:"zone,omitempty"`
-	Team   int    `json:"team"` // attacking/scoring team, -1 if unknown
-	Player int    `json:"player,omitempty"`
+	Type      string `json:"type"` // "box_entry" or "goal"
+	Clock     int64  `json:"clock"`
+	Zone      string `json:"zone,omitempty"`
+	Team      int    `json:"team"` // team in possession / scoring team, -1 if unknown
+	Player    int    `json:"player,omitempty"`
+	Confirmed int64  `json:"confirmed,omitempty"` // goals: clock of the confirming kick-off
+}
+
+// goalMouth records the ball's last visit to a goal mouth.
+type goalMouth struct {
+	clock int64
+	left  bool // the left (Home) goal
 }
 
 type playerStat struct {
@@ -61,17 +80,19 @@ type playerStat struct {
 	speed         float64 // smoothed, m/s
 	top           float64
 	seen          bool
+	active        bool // present in the latest frame (false once substituted)
 }
 
 type PlayerOut struct {
-	ID    int     `json:"id"`
-	Team  int     `json:"team"`
-	Num   int     `json:"num"`
-	X     float64 `json:"x"`
-	Y     float64 `json:"y"`
-	Dist  float64 `json:"dist"`
-	Speed float64 `json:"speed"`
-	Top   float64 `json:"top"`
+	ID     int     `json:"id"`
+	Team   int     `json:"team"`
+	Num    int     `json:"num"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Dist   float64 `json:"dist"`
+	Speed  float64 `json:"speed"`
+	Top    float64 `json:"top"`
+	Active bool    `json:"active"`
 }
 
 type PossOut struct {
@@ -97,7 +118,8 @@ type StatsOut struct {
 type StateMsg struct {
 	Type    string          `json:"type"`
 	Seq     uint64          `json:"seq"`
-	Clock   int64           `json:"clock"` // ms since the first frame
+	Clock   int64           `json:"clock"` // match time in ms
+	Period  int             `json:"period"`
 	Ball    Point           `json:"ball"`
 	Players []PlayerOut     `json:"players"`
 	Poss    PossOut         `json:"poss"`
@@ -116,10 +138,11 @@ type helloMsg struct {
 	Zones  []Zone             `json:"zones"`
 	Teams  [2]string          `json:"teams"`
 	Events []Event            `json:"events"`
+	Goals  []Event            `json:"goals"` // every goal, even those beyond the event history
 }
 
 // Engine owns all match state. Only the Run goroutine touches it, except for
-// the cached hello message, which is guarded by helloMu.
+// the cached hello and latest state messages, which are guarded by helloMu.
 type Engine struct {
 	ingest *IngestStats
 	hub    *Hub
@@ -131,6 +154,7 @@ type Engine struct {
 	firstTS int64
 	lastSeq uint64
 	lastTS  int64
+	lastMT  int64
 	lost    uint64
 
 	possTeam   int
@@ -139,8 +163,15 @@ type Engine struct {
 	inZone  map[string]bool
 	entries map[string]int
 	score   [2]int
-	ballOut bool
 	events  []Event
+	goals   []Event
+
+	period   int
+	mouth    *goalMouth
+	inMouth  bool
+	koHeld   float64
+	koArmed  bool
+	lastTick int64
 
 	fpsWindow time.Time
 	fpsCount  int
@@ -148,8 +179,9 @@ type Engine struct {
 	edgeLat   float64
 	procUs    int64
 
-	helloMu sync.RWMutex
-	hello   []byte
+	helloMu   sync.RWMutex
+	hello     []byte
+	lastState []byte
 }
 
 func NewEngine(ingest *IngestStats, hub *Hub) *Engine {
@@ -171,15 +203,26 @@ func (e *Engine) reset() {
 		e.entries[z.Name] = 0
 	}
 	e.score = [2]int{}
-	e.ballOut = false
-	e.events = nil
+	e.period = 0
+	e.mouth = nil
+	e.inMouth = false
+	e.koHeld = 0
+	e.koArmed = true
+	e.lastTick = 0
+	e.events = []Event{} // encode as [] rather than null
+	e.goals = []Event{}
 	e.refreshHello()
 }
 
-func (e *Engine) Hello() []byte {
+// Welcome returns the messages a newly connected client needs: the hello
+// message and, if the match has started, the latest state.
+func (e *Engine) Welcome() [][]byte {
 	e.helloMu.RLock()
 	defer e.helloMu.RUnlock()
-	return e.hello
+	if e.lastState == nil {
+		return [][]byte{e.hello}
+	}
+	return [][]byte{e.hello, e.lastState}
 }
 
 func (e *Engine) refreshHello() {
@@ -189,6 +232,7 @@ func (e *Engine) refreshHello() {
 		Zones:  zones,
 		Teams:  teamNames,
 		Events: e.events,
+		Goals:  e.goals,
 	})
 	if err != nil {
 		log.Printf("engine: marshal hello: %v", err)
@@ -196,6 +240,7 @@ func (e *Engine) refreshHello() {
 	}
 	e.helloMu.Lock()
 	e.hello = b
+	e.lastState = nil
 	e.helloMu.Unlock()
 }
 
@@ -225,26 +270,38 @@ func (e *Engine) process(f Frame) []byte {
 			e.lost += gap - 1
 		}
 	}
+	// Prefer match time: it stays correct when the edge replays faster than
+	// real time. Fall back to wall-clock timestamps for older edges.
 	dt := 0.05 * float64(gap)
-	if e.haveSeq && f.TS > e.lastTS {
+	switch {
+	case e.haveSeq && f.MT != nil && *f.MT > e.lastMT:
+		dt = float64(*f.MT-e.lastMT) / 1000
+	case e.haveSeq && f.MT == nil && f.TS > e.lastTS:
 		dt = float64(f.TS-e.lastTS) / 1000
 	}
 	if !e.haveSeq {
 		e.firstTS = f.TS
 		e.haveSeq = true
 	}
-	e.lastSeq, e.lastTS = f.Seq, f.TS
 	clock := f.TS - e.firstTS
+	if f.MT != nil {
+		clock = *f.MT
+		e.lastMT = *f.MT
+	}
+	e.lastSeq, e.lastTS = f.Seq, f.TS
 
 	e.updateRate(f)
 	e.updatePlayers(f, dt)
 	poss := e.updatePossession(f.Ball, gap)
 	newEvents := e.updateGeofences(f.Ball, clock, poss)
+	newEvents = append(newEvents, e.updateGoals(f, clock)...)
+	e.recordEvents(newEvents)
 
 	msg := StateMsg{
 		Type:    "state",
 		Seq:     f.Seq,
 		Clock:   clock,
+		Period:  f.Period,
 		Ball:    Point{r2(f.Ball.X), r2(f.Ball.Y)},
 		Players: make([]PlayerOut, 0, len(e.order)),
 		Poss:    poss,
@@ -271,6 +328,7 @@ func (e *Engine) process(f Frame) []byte {
 			ID: p.id, Team: p.team, Num: p.num,
 			X: r2(p.x), Y: r2(p.y),
 			Dist: r2(p.dist), Speed: r2(p.speed), Top: r2(p.top),
+			Active: p.active,
 		})
 	}
 
@@ -280,6 +338,9 @@ func (e *Engine) process(f Frame) []byte {
 		return nil
 	}
 	e.procUs = time.Since(start).Microseconds()
+	e.helloMu.Lock()
+	e.lastState = b
+	e.helloMu.Unlock()
 	return b
 }
 
@@ -303,6 +364,9 @@ func (e *Engine) updateRate(f Frame) {
 
 func (e *Engine) updatePlayers(f Frame, dt float64) {
 	added := false
+	for _, p := range e.players {
+		p.active = false
+	}
 	for _, pf := range f.Players {
 		p, ok := e.players[pf.ID]
 		if !ok {
@@ -320,7 +384,7 @@ func (e *Engine) updatePlayers(f Frame, dt float64) {
 				p.top = math.Max(p.top, p.speed)
 			}
 		}
-		p.x, p.y, p.seen = pf.X, pf.Y, true
+		p.x, p.y, p.seen, p.active = pf.X, pf.Y, true, true
 	}
 	if added {
 		sort.Ints(e.order)
@@ -331,6 +395,9 @@ func (e *Engine) updatePossession(ball Point, gap uint64) PossOut {
 	var best *playerStat
 	bestD := math.Inf(1)
 	for _, p := range e.players {
+		if !p.active {
+			continue
+		}
 		if d := math.Hypot(p.x-ball.X, p.y-ball.Y); d < bestD {
 			best, bestD = p, d
 		}
@@ -377,17 +444,76 @@ func (e *Engine) updateGeofences(ball Point, clock int64, poss PossOut) []Event 
 		e.inZone[z.Name] = in
 	}
 
-	isOut := ball.X < 0 || ball.X > pitchW || ball.Y < 0 || ball.Y > pitchH
-	if isOut && !e.ballOut && (ball.X < 0 || ball.X > pitchW) && math.Abs(ball.Y-pitchH/2) < goalHalfWidth {
-		scorer := 0
-		if ball.X < 0 {
-			scorer = 1
-		}
-		e.score[scorer]++
-		out = append(out, Event{Type: "goal", Clock: clock, Team: scorer})
-	}
-	e.ballOut = isOut
+	return out
+}
 
+// updateGoals detects goals. Tracking data has no ball height, so a ball
+// crossing the goal line between the posts may have gone over the bar.
+// Instead a goal is confirmed by what follows it: a kick-off (ball on the
+// centre spot, both teams in their own halves) shortly after the ball was in
+// a goal mouth. The goal mouth tells us which side scored. Kick-offs that
+// start a half are not preceded by a goal-mouth visit in that half.
+func (e *Engine) updateGoals(f Frame, clock int64) []Event {
+	if f.Period != e.period {
+		e.period = f.Period
+		e.mouth = nil
+	}
+	dt := float64(clock-e.lastTick) / 1000
+	e.lastTick = clock
+
+	// Remember when the ball entered a goal mouth (not when it left: the
+	// ball's position often freezes there until play restarts).
+	ball := f.Ball
+	near := math.Abs(ball.Y-pitchH/2) < goalHalfWidth+mouthDepth
+	left, right := near && ball.X < mouthDepth, near && ball.X > pitchW-mouthDepth
+	if (left || right) && !e.inMouth {
+		e.mouth = &goalMouth{clock: clock, left: left}
+	}
+	e.inMouth = left || right
+
+	dc := math.Hypot(ball.X-pitchW/2, ball.Y-pitchH/2)
+	if dc > centerCircle {
+		e.koArmed = true
+	}
+	if e.teamsInOwnHalves() {
+		e.koHeld += math.Max(dt, 0)
+	} else {
+		e.koHeld = 0
+	}
+	if !e.koArmed || e.koHeld < koHold || dc >= koSpotRadius {
+		return nil
+	}
+	e.koArmed = false
+
+	m := e.mouth
+	e.mouth = nil
+	if m == nil || clock-m.clock > mouthWindow {
+		return nil // kick-off at the start of a half
+	}
+	scorer := 0 // Home scores in the right goal
+	if m.left {
+		scorer = 1
+	}
+	e.score[scorer]++
+	ev := Event{Type: "goal", Clock: m.clock, Team: scorer, Confirmed: clock}
+	e.goals = append(e.goals, ev)
+	return []Event{ev}
+}
+
+// teamsInOwnHalves reports whether Home is in the left half and Away in the right.
+func (e *Engine) teamsInOwnHalves() bool {
+	for _, p := range e.players {
+		if !p.active {
+			continue
+		}
+		if (p.team == 0 && p.x > pitchW/2+koHalfSlack) || (p.team == 1 && p.x < pitchW/2-koHalfSlack) {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) recordEvents(out []Event) {
 	if len(out) > 0 {
 		e.events = append(e.events, out...)
 		if len(e.events) > maxEvents {
@@ -395,7 +521,6 @@ func (e *Engine) updateGeofences(ball Point, clock int64, poss PossOut) []Event 
 		}
 		e.refreshHello()
 	}
-	return out
 }
 
 func r2(v float64) float64 {
