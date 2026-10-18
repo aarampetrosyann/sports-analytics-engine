@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pitch Tracker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <section class="stage">
+      <canvas id="pitch" aria-label="Live tactical pitch view"></canvas>
+      <div class="stage-bar">
+        <span id="conn" class="conn" data-state="connecting">Connecting…</span>
+        <label><input type="checkbox" id="smooth" checked> Interpolate</label>
+        <label><input type="checkbox" id="trail" checked> Ball trail</label>
+      </div>
+    </section>
+
+    <aside class="hud">
+      <header class="scoreboard">
+        <div class="team"><span class="swatch home"></span>Home</div>
+        <div class="score"><span id="score-0">0</span><span class="dash">–</span><span id="score-1">0</span></div>
+        <div class="team away">Away<span class="swatch away"></span></div>
+        <div class="clock" id="clock">00:00</div>
+      </header>
+
+      <section class="card">
+        <h2>Possession</h2>
+        <div class="poss-bar"><div id="poss-home" class="home"></div><div id="poss-away" class="away"></div></div>
+        <div class="poss-labels"><span id="poss-home-pct">50%</span><span id="poss-away-pct">50%</span></div>
+        <div class="holder" id="holder">Waiting for data…</div>
+      </section>
+
+      <section class="card">
+        <h2>Penalty boxes</h2>
+        <div class="zones">
+          <div class="zone" id="zone-left_box"><span>Home box</span><strong id="entries-left_box">0</strong><small>entries</small></div>
+          <div class="zone" id="zone-right_box"><span>Away box</span><strong id="entries-right_box">0</strong><small>entries</small></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Distance covered</h2>
+        <div class="dist-grid">
+          <table id="dist-0"></table>
+          <table id="dist-1"></table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Events</h2>
+        <ol id="events" class="events"><li class="empty">No events yet</li></ol>
+      </section>
+
+      <footer class="telemetry">
+        <dl>
+          <div><dt>Ingest</dt><dd id="t-fps">–</dd></div>
+          <div><dt>Packets lost</dt><dd id="t-lost">–</dd></div>
+          <div><dt>Edge → server</dt><dd id="t-edge">–</dd></div>
+          <div><dt>Server → client</dt><dd id="t-wire">–</dd></div>
+          <div><dt>Processing</dt><dd id="t-proc">–</dd></div>
+          <div><dt>Render</dt><dd id="t-render">–</dd></div>
+        </dl>
+      </footer>
+    </aside>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
