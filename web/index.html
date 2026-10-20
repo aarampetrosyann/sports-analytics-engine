@@ -9,12 +9,15 @@
 <body>
   <main class="app">
     <section class="stage">
-      <canvas id="pitch" aria-label="Live tactical pitch view"></canvas>
-      <div class="stage-bar">
-        <span id="conn" class="conn" data-state="connecting">Connecting…</span>
-        <label><input type="checkbox" id="smooth" checked> Interpolate</label>
-        <label><input type="checkbox" id="trail" checked> Ball trail</label>
+      <div class="toolbar">
+        <div class="stage-bar">
+          <span id="conn" class="conn" data-state="connecting">Connecting…</span>
+          <label><input type="checkbox" id="smooth" checked> Interpolate</label>
+          <label><input type="checkbox" id="trail" checked> Ball trail</label>
+        </div>
+        <div class="views" id="views" role="group" aria-label="Camera view"></div>
       </div>
+      <canvas id="pitch" aria-label="Live tactical pitch view"></canvas>
     </section>
 
     <aside class="hud">
@@ -66,6 +69,7 @@
       </footer>
     </aside>
   </main>
+  <script src="pitch.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
