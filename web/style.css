@@ -1,16 +1,16 @@
 :root {
-  --bg: #0b0f14;
-  --panel: #121821;
-  --panel-2: #18202b;
-  --line: #243041;
-  --text: #e6edf3;
-  --muted: #8b98a8;
+  --bg: #faf9f5;
+  --panel: #ffffff;
+  --panel-2: #f4f2ec;
+  --line: #e5e1d8;
+  --text: #1f1e1b;
+  --muted: #76726a;
   --home: #3b82f6;
   --away: #ef4444;
-  --accent: #facc15;
-  --ok: #22c55e;
+  --accent: #d9a404;
+  --ok: #16a34a;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -23,15 +23,33 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
   height: 100vh;
 }
 
-.stage { position: relative; min-width: 0; min-height: 0; }
-#pitch { display: block; width: 100%; height: 100%; }
+.stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+#pitch { display: block; flex: 1; width: 100%; min-height: 0; }
+
+.toolbar {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+  gap: 8px; padding: 12px 12px 0;
+}
 
 .stage-bar {
-  position: absolute; left: 12px; top: 12px;
   display: flex; gap: 14px; align-items: center;
   padding: 6px 10px; border-radius: 8px;
-  background: rgba(11, 15, 20, 0.75); font-size: 13px; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line);
+  font-size: 13px; color: var(--muted);
 }
+
+.views {
+  display: flex; padding: 3px; gap: 2px; border-radius: 9px; overflow-x: auto;
+  background: var(--panel); border: 1px solid var(--line);
+}
+.views button {
+  border: 0; background: transparent; color: var(--muted);
+  font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+}
+.views button:hover { color: var(--text); }
+.views button[aria-pressed="true"] { background: var(--text); color: var(--panel); }
+
+
 .stage-bar label { display: flex; gap: 5px; align-items: center; cursor: pointer; }
 
 .conn { display: flex; align-items: center; gap: 6px; color: var(--text); }
@@ -91,7 +109,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .zone span { font-size: 12px; color: var(--muted); }
 .zone strong { font-size: 22px; font-variant-numeric: tabular-nums; }
 .zone small { font-size: 11px; color: var(--muted); }
-.zone.active { border-color: var(--accent); background: rgba(250, 204, 21, 0.12); }
+.zone.active { border-color: var(--accent); background: rgba(250, 204, 21, 0.16); }
 .zone.active span { color: var(--accent); }
 
 .dist-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -110,7 +128,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .events .muted { color: var(--muted); }
 .events time { color: var(--muted); font-variant-numeric: tabular-nums; }
 .tag { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: var(--line); }
-.tag.goal { background: var(--accent); color: #111; }
+.tag.goal { background: #facc15; color: #111; }
 
 .telemetry dl {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 0;

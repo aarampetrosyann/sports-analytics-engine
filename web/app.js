@@ -1,14 +1,13 @@
 'use strict';
 
 const TEAM_COLORS = ['#3b82f6', '#ef4444'];
-const MARGIN = 4; // meters of surround drawn around the pitch
 const HUD_INTERVAL = 200; // ms between sidebar refreshes
 const STALE_AFTER = 1000; // ms without a frame before the stream counts as stalled
 const TRAIL_LEN = 14;
 
 const canvas = document.getElementById('pitch');
 const ctx = canvas.getContext('2d');
-const pitchLayer = document.createElement('canvas');
+const pitchView = new PitchView();
 const $ = (id) => document.getElementById(id);
 const smoothToggle = $('smooth');
 const trailToggle = $('trail');
@@ -16,7 +15,7 @@ const trailToggle = $('trail');
 let pitch = { w: 105, h: 68 };
 let zones = [];
 let teams = ['Home', 'Away'];
-let view = { scale: 1, ox: 0, oy: 0 };
+let dpr = 1;
 
 // The two most recent frames, used for interpolation.
 let prev = null;
@@ -52,6 +51,7 @@ function connect() {
 
 function onHello(msg) {
   pitch = msg.pitch;
+  pitchView.setPitch(pitch.w, pitch.h);
   zones = msg.zones;
   teams = msg.teams;
   prev = curr = null;
@@ -108,74 +108,43 @@ function setConn(state, text) {
 // ---------------------------------------------------------------- canvas
 
 function resize() {
-  const dpr = window.devicePixelRatio || 1;
+  dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
-  canvas.width = pitchLayer.width = Math.max(1, Math.round(rect.width * dpr));
-  canvas.height = pitchLayer.height = Math.max(1, Math.round(rect.height * dpr));
-
-  const fullW = pitch.w + MARGIN * 2;
-  const fullH = pitch.h + MARGIN * 2;
-  const scale = Math.min(canvas.width / fullW, canvas.height / fullH);
-  view = {
-    scale,
-    ox: (canvas.width - pitch.w * scale) / 2,
-    oy: (canvas.height - pitch.h * scale) / 2,
-    dpr,
-  };
-  drawPitch();
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  pitchView.resize(canvas.width, canvas.height, dpr);
 }
 
-const px = (x) => view.ox + x * view.scale;
-const py = (y) => view.oy + y * view.scale;
-const m = (d) => d * view.scale;
+// ---------------------------------------------------------------- views
 
-function drawPitch() {
-  const g = pitchLayer.getContext('2d');
-  const { w, h } = pitch;
-  g.fillStyle = '#0b2a17';
-  g.fillRect(0, 0, pitchLayer.width, pitchLayer.height);
+const VIEW_KEY = 'pitch-view';
 
-  // Mowing stripes.
-  const stripes = 14;
-  for (let i = 0; i < stripes; i++) {
-    g.fillStyle = i % 2 ? '#1c6b38' : '#1a6334';
-    g.fillRect(px((w / stripes) * i), py(0), m(w / stripes) + 1, m(h));
+function setView(name) {
+  pitchView.setView(name);
+  for (const b of document.querySelectorAll('#views button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.view === name));
   }
+  try { localStorage.setItem(VIEW_KEY, name); } catch { /* storage unavailable */ }
+}
 
-  g.strokeStyle = 'rgba(255,255,255,0.85)';
-  g.fillStyle = 'rgba(255,255,255,0.85)';
-  g.lineWidth = Math.max(1.5, m(0.12));
-  const rect = (x, y, rw, rh) => g.strokeRect(px(x), py(y), m(rw), m(rh));
-  const circle = (x, y, r, a0 = 0, a1 = Math.PI * 2, fill = false) => {
-    g.beginPath();
-    g.arc(px(x), py(y), m(r), a0, a1);
-    fill ? g.fill() : g.stroke();
-  };
-
-  rect(0, 0, w, h);
-  g.beginPath();
-  g.moveTo(px(w / 2), py(0));
-  g.lineTo(px(w / 2), py(h));
-  g.stroke();
-  circle(w / 2, h / 2, 9.15);
-  circle(w / 2, h / 2, 0.3, 0, Math.PI * 2, true);
-
-  const boxW = 40.32, sixW = 18.32, goalW = 7.32;
-  const arc = Math.acos(5.5 / 9.15);
-  for (const side of [0, 1]) {
-    const x0 = side ? w - 16.5 : 0;
-    const x6 = side ? w - 5.5 : 0;
-    const spot = side ? w - 11 : 11;
-    rect(x0, (h - boxW) / 2, 16.5, boxW);
-    rect(x6, (h - sixW) / 2, 5.5, sixW);
-    circle(spot, h / 2, 0.3, 0, Math.PI * 2, true);
-    if (side) circle(spot, h / 2, 9.15, Math.PI - arc, Math.PI + arc);
-    else circle(spot, h / 2, 9.15, -arc, arc);
-    rect(side ? w : -2, (h - goalW) / 2, 2, goalW);
-  }
-  for (const [cx, cy, a0] of [[0, 0, 0], [w, 0, Math.PI / 2], [w, h, Math.PI], [0, h, Math.PI * 1.5]]) {
-    circle(cx, cy, 1, a0, a0 + Math.PI / 2);
-  }
+function initViews() {
+  const bar = $('views');
+  bar.innerHTML = Object.entries(PITCH_VIEWS)
+    .map(([name, v]) => `<button type="button" data-view="${name}">${v.label}</button>`)
+    .join('');
+  bar.addEventListener('click', (ev) => {
+    const name = ev.target.closest('button')?.dataset.view;
+    if (name) setView(name);
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.target.closest('input, textarea') || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    const names = Object.keys(PITCH_VIEWS);
+    const i = Number(ev.key) - 1;
+    if (i >= 0 && i < names.length) setView(names[i]);
+  });
+  let saved = null;
+  try { saved = localStorage.getItem(VIEW_KEY); } catch { /* storage unavailable */ }
+  setView(PITCH_VIEWS[saved] ? saved : 'top');
 }
 
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -205,7 +174,9 @@ function render(now) {
     renderWindow = now;
   }
 
-  ctx.drawImage(pitchLayer, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(pitchView.layer, 0, 0);
   if (!curr) return;
 
   const stale = now - curr.at > STALE_AFTER;
@@ -213,61 +184,76 @@ function render(now) {
 
   const msg = curr.msg;
   const s = sample(now);
+  const pv = pitchView;
 
   // Geofences: steady tint while the ball is inside, plus a flash on entry.
   for (const z of zones) {
     const flash = zoneFlash[z.name] ? Math.max(0, 1 - (now - zoneFlash[z.name]) / 800) : 0;
-    const alpha = (msg.zones[z.name] ? 0.16 : 0) + flash * 0.3;
+    const alpha = (msg.zones[z.name] ? 0.22 : 0) + flash * 0.35;
     if (alpha <= 0) continue;
-    ctx.fillStyle = `rgba(250, 204, 21, ${alpha})`;
-    ctx.fillRect(px(z.x0), py(z.y0), m(z.x1 - z.x0), m(z.y1 - z.y0));
+    ctx.fillStyle = `rgba(255, 236, 120, ${alpha})`;
+    pv.tracePolygon(ctx, [[z.x0, z.y0], [z.x1, z.y0], [z.x1, z.y1], [z.x0, z.y1]]);
+    ctx.fill();
   }
 
   if (trailToggle.checked && trail.length > 1) {
     ctx.lineCap = 'round';
     for (let i = 1; i < trail.length; i++) {
-      ctx.strokeStyle = `rgba(255,255,255,${(i / trail.length) * 0.5})`;
-      ctx.lineWidth = Math.max(1, m(0.35) * (i / trail.length));
+      const a = pv.project(trail[i - 1].x, trail[i - 1].y), b = pv.project(trail[i].x, trail[i].y);
+      ctx.strokeStyle = `rgba(255,255,255,${(i / trail.length) * 0.6})`;
+      ctx.lineWidth = Math.max(1, 0.35 * b.s * (i / trail.length));
       ctx.beginPath();
-      ctx.moveTo(px(trail[i - 1].x), py(trail[i - 1].y));
-      ctx.lineTo(px(trail[i].x), py(trail[i].y));
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
       ctx.stroke();
     }
   }
 
-  const r = Math.max(7 * view.dpr, m(0.95));
+  // Players and ball, far to near so nearer ones overlap farther ones.
+  // In perspective views they stand on the grass with a ground shadow.
+  const lift = pv.isFlat ? 0 : 1;
+  const items = s.players
+    .filter((p) => p.active)
+    .map((p) => ({ p, g: pv.project(p.x, p.y, 0), c: pv.project(p.x, p.y, lift * 0.95) }));
+  const ballGround = pv.project(s.ball.x, s.ball.y, 0);
+  items.push({ ball: true, g: ballGround, c: pv.project(s.ball.x, s.ball.y, lift * 0.3) });
+  items.sort((a, b) => a.g.y - b.g.y);
+
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = `600 ${Math.round(r * 1.05)}px ui-sans-serif, system-ui, sans-serif`;
-  for (const p of s.players) {
-    if (!p.active) continue; // substituted off
-    const x = px(p.x), y = py(p.y);
-    if (msg.poss.control && msg.poss.player === p.id) {
-      ctx.strokeStyle = '#facc15';
-      ctx.lineWidth = 2.5 * view.dpr;
+  for (const it of items) {
+    const { g, c } = it;
+    const r = it.ball ? Math.max(4 * dpr, 0.5 * c.s) : Math.max(6.5 * dpr, 0.95 * c.s);
+    if (!pv.isFlat) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
       ctx.beginPath();
-      ctx.arc(x, y, r + 4 * view.dpr, 0, Math.PI * 2);
+      ctx.ellipse(g.x, g.y, r * 0.95, r * 0.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+    ctx.shadowBlur = 3 * dpr;
+    ctx.shadowOffsetY = 1.5 * dpr;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = it.ball ? '#fff' : TEAM_COLORS[it.p.team];
+    ctx.fill();
+    ctx.restore();
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.strokeStyle = it.ball ? '#222' : 'rgba(255,255,255,0.9)';
+    ctx.stroke();
+    if (it.ball) continue;
+    if (msg.poss.control && msg.poss.player === it.p.id) {
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 2.5 * dpr;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, r + 3.5 * dpr, 0, Math.PI * 2);
       ctx.stroke();
     }
-    ctx.fillStyle = TEAM_COLORS[p.team];
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-    ctx.lineWidth = 1.5 * view.dpr;
-    ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.fillText(p.num, x, y + 0.5);
+    ctx.font = `600 ${Math.round(r * 1.05)}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.fillText(it.p.num, c.x, c.y + 0.5);
   }
-
-  const br = Math.max(4 * view.dpr, m(0.5));
-  ctx.fillStyle = '#fff';
-  ctx.strokeStyle = '#111';
-  ctx.lineWidth = 1.5 * view.dpr;
-  ctx.beginPath();
-  ctx.arc(px(s.ball.x), py(s.ball.y), br, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
 
   if (now - lastHud >= HUD_INTERVAL) {
     lastHud = now;
@@ -350,5 +336,6 @@ function renderEvents(events, replace) {
 
 new ResizeObserver(resize).observe(canvas);
 resize();
+initViews();
 connect();
 requestAnimationFrame(render);
