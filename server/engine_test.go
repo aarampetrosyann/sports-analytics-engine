@@ -57,7 +57,7 @@ func TestKickOffAfterGoalMouthCountsAsGoal(t *testing.T) {
 	if st.Score != [2]int{1, 0} {
 		t.Fatalf("score = %v, want [1 0]", st.Score)
 	}
-	ev := m.e.events[len(m.e.events)-1]
+	ev := m.e.goals[len(m.e.goals)-1]
 	if ev.Type != "goal" || ev.Team != 0 || ev.Confirmed <= ev.Clock {
 		t.Fatalf("goal event = %+v", ev)
 	}
@@ -127,7 +127,7 @@ func TestKickOffWithBallReacquiredOnSpot(t *testing.T) {
 	if st.Score != [2]int{1, 0} {
 		t.Fatalf("score = %v, want [1 0]", st.Score)
 	}
-	ev := m.e.events[len(m.e.events)-1]
+	ev := m.e.goals[len(m.e.goals)-1]
 	if ev.Clock < goalAt || ev.Clock > goalAt+1000 {
 		t.Fatalf("goal clock %d, want just after %d (when the ball entered the goal)", ev.Clock, goalAt)
 	}
