@@ -29,6 +29,9 @@ let renderWindow = performance.now();
 let renderFps = 0;
 let socketOpen = false;
 let goals = [];
+let allEvents = []; // every event this match, oldest first
+let eventFilter = 'all';
+let lastZones = {};
 
 // ---------------------------------------------------------------- network
 
@@ -56,7 +59,8 @@ function onHello(msg) {
   teams = msg.teams;
   prev = curr = null;
   trail = [];
-  renderEvents((msg.events || []).slice().reverse(), true);
+  allEvents = (msg.events || []).slice();
+  renderEvents();
   goals = msg.goals || [];
   renderGoals();
   resize();
@@ -67,7 +71,8 @@ function onState(msg) {
   if (curr && msg.seq < curr.msg.seq) { // edge restarted
     prev = null;
     trail = [];
-    renderEvents([], true);
+    allEvents = [];
+    renderEvents();
     goals = [];
     renderGoals();
   } else {
@@ -81,9 +86,17 @@ function onState(msg) {
   const lat = Date.now() - msg.srvTs;
   wireLatency = wireLatency === null ? lat : wireLatency * 0.9 + lat * 0.1;
 
+  // Flash a penalty box when the ball enters it.
+  for (const [name, inside] of Object.entries(msg.zones)) {
+    if (inside && !lastZones[name]) zoneFlash[name] = now;
+  }
+  lastZones = msg.zones;
+
   if (msg.events) {
-    for (const ev of msg.events) if (ev.type === 'box_entry') zoneFlash[ev.zone] = now;
-    renderEvents(msg.events.slice().reverse(), false);
+    allEvents.push(...msg.events);
+    // Shots and goals are reported once settled, so keep the list in match order.
+    allEvents.sort((a, b) => a.clock - b.clock);
+    renderEvents();
     const scored = msg.events.filter((ev) => ev.type === 'goal');
     if (scored.length) {
       goals.push(...scored);
@@ -270,39 +283,66 @@ const fmtClock = (ms) => {
 const fmtDist = (d) => (d >= 1000 ? `${(d / 1000).toFixed(2)} km` : `${Math.round(d)} m`);
 const teamDot = (t) => `<span class="dot" style="background:${TEAM_COLORS[t]}"></span>`;
 
+const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+
+// Match stats: [label, (msg) => [home, away], format].
+const STAT_ROWS = [
+  ['Possession', (m) => m.possPct, (v) => `${Math.round(v)}%`],
+  ['Shots', (m) => m.tallies.shot],
+  ['On target', (m) => m.tallies.on_target],
+  ['Corners', (m) => m.tallies.corner],
+  ['Throw-ins', (m) => m.tallies.throw_in],
+  // Each team's entries into the opponent's box (Home attacks the right).
+  ['Box entries', (m) => [m.entries.right_box, m.entries.left_box]],
+  ['Distance', (m) => [0, 1].map((t) => sum(m.players.filter((p) => p.team === t).map((p) => p.dist)) / 1000),
+    (v) => `${v.toFixed(1)} km`],
+];
+
 function updateHud(msg) {
   $('score-0').textContent = msg.score[0];
   $('score-1').textContent = msg.score[1];
   $('clock').textContent = `${fmtClock(msg.clock)} · ${msg.period === 2 ? '2nd' : '1st'} half`;
 
-  const [home, away] = msg.possPct;
-  $('poss-home').style.width = `${home}%`;
-  $('poss-away').style.width = `${away}%`;
-  $('poss-home-pct').textContent = `${teams[0]} ${home.toFixed(1)}%`;
-  $('poss-away-pct').textContent = `${away.toFixed(1)}% ${teams[1]}`;
-
   const p = msg.poss;
   $('holder').innerHTML = p.control
-    ? `${teamDot(p.team)}<strong>#${p.num} ${teams[p.team]}</strong> on the ball <span class="muted">· ${p.dist.toFixed(1)} m</span>`
+    ? `${teamDot(p.team)}<strong>#${p.num} ${teams[p.team]}</strong> on the ball`
     : `<span class="muted">Loose ball · nearest</span> ${teamDot(p.team)}#${p.num} ${teams[p.team]} <span class="muted">(${p.dist.toFixed(1)} m)</span>`;
 
-  for (const z of zones) {
-    $(`zone-${z.name}`)?.classList.toggle('active', !!msg.zones[z.name]);
-    const el = $(`entries-${z.name}`);
-    if (el) el.textContent = msg.entries[z.name];
-  }
+  $('stats').innerHTML = STAT_ROWS.map(([label, get, fmt = String]) => {
+    const [h, a] = get(msg);
+    const total = h + a;
+    const hw = (100 * h) / total;
+    const bar = total
+      ? `<i class="home" style="width:${hw}%"></i><i class="away" style="width:${100 - hw}%"></i>`
+      : '<i class="none" style="width:100%"></i>';
+    return `<div class="stat">
+      <span class="v${h > a ? ' lead' : ''}">${fmt(h)}</span><span class="label">${label}</span><span class="v${a > h ? ' lead' : ''}">${fmt(a)}</span>
+      <div class="bar">${bar}</div>
+    </div>`;
+  }).join('');
 
-  for (const team of [0, 1]) {
-    const rows = msg.players
-      .filter((pl) => pl.team === team)
-      .sort((a, b) => b.dist - a.dist)
-      .map((pl) => `<tr${pl.active ? '' : ' class="off" title="Substituted off"'}><td><span class="num" style="background:${TEAM_COLORS[team]}">${pl.num}</span></td>`
-        + `<td>${fmtDist(pl.dist)}</td><td>${(pl.speed * 3.6).toFixed(1)} km/h</td></tr>`)
-      .join('');
-    $(`dist-${team}`).innerHTML = `<tr><th colspan="3">${teams[team]}</th></tr>${rows}`;
+  const active = msg.players.filter((pl) => pl.active || pl.dist > 0);
+  const leader = (title, key, fmt) => {
+    const top = active.slice().sort((a, b) => b[key] - a[key]).slice(0, 3);
+    return `<div><h3>${title}</h3><ol>${top.map((pl) =>
+      `<li><span class="num" style="background:${TEAM_COLORS[pl.team]}">${pl.num}</span><span>${fmt(pl[key])}</span></li>`).join('')}</ol></div>`;
+  };
+  $('leaders').innerHTML = leader('Distance', 'dist', fmtDist) + leader('Top speed', 'top', (v) => `${(v * 3.6).toFixed(1)} km/h`);
+
+  if ($('dist-0').closest('details').open) {
+    for (const team of [0, 1]) {
+      const rows = msg.players
+        .filter((pl) => pl.team === team)
+        .sort((a, b) => b.dist - a.dist)
+        .map((pl) => `<tr${pl.active ? '' : ' class="off" title="Substituted off"'}><td><span class="num" style="background:${TEAM_COLORS[team]}">${pl.num}</span></td>`
+          + `<td>${fmtDist(pl.dist)}</td><td>${(pl.speed * 3.6).toFixed(1)} km/h</td></tr>`)
+        .join('');
+      $(`dist-${team}`).innerHTML = `<tr><th colspan="3">${teams[team]}</th></tr>${rows}`;
+    }
   }
 
   const st = msg.stats;
+  $('t-summary').textContent = `${st.fps.toFixed(0)} Hz · ${st.lost} lost`;
   $('t-fps').textContent = `${st.fps.toFixed(1)} Hz`;
   $('t-lost').textContent = `${st.lost}${st.dropped ? ` (+${st.dropped} dropped)` : ''}`;
   $('t-edge').textContent = `${st.edgeLatencyMs.toFixed(1)} ms`;
@@ -311,28 +351,56 @@ function updateHud(msg) {
   $('t-render').textContent = `${renderFps.toFixed(0)} fps`;
 }
 
-function describeEvent(ev) {
-  const team = ev.team >= 0 ? teams[ev.team] : 'Unknown';
-  if (ev.type === 'goal') {
-    return { tag: 'GOAL', cls: 'goal', text: `${team} score <span class="muted">· confirmed at kick-off ${fmtClock(ev.confirmed)}</span>` };
-  }
-  const zone = zones.find((z) => z.name === ev.zone);
-  return { tag: 'BOX', cls: '', text: `Ball into ${zone ? zone.label.toLowerCase() : ev.zone} · ${team} in possession` };
+// ---------------------------------------------------------------- events
+
+const EVENT_FILTERS = {
+  all: () => true,
+  goals: (ev) => ev.type === 'goal',
+  shots: (ev) => ev.type === 'shot',
+  setpieces: (ev) => ['corner', 'throw_in', 'goal_kick', 'kickoff'].includes(ev.type),
+};
+const SHOT_RESULT = { goal: 'goal', on_target: 'saved', off_target: 'off target', blocked: 'blocked' };
+
+function playerNum(id) {
+  const p = curr?.byId.get(id);
+  return p ? `#${p.num} ` : '';
 }
 
-// Newest events first; `events` must already be newest-first.
-function renderEvents(events, replace) {
-  const list = $('events');
-  if (replace) list.innerHTML = '';
-  list.querySelector('.empty')?.remove();
-  const html = events.map((ev) => {
-    const d = describeEvent(ev);
-    return `<li><time>${fmtClock(ev.clock)}</time><span class="tag ${d.cls}">${d.tag}</span><span>${d.text}</span></li>`;
-  }).join('');
-  list.insertAdjacentHTML('afterbegin', html);
-  while (list.children.length > 40) list.lastElementChild.remove();
-  if (!list.children.length) list.innerHTML = '<li class="empty">No events yet</li>';
+function describeEvent(ev) {
+  const team = ev.team >= 0 ? teams[ev.team] : 'Unknown';
+  const who = `${ev.team >= 0 ? teamDot(ev.team) : ''}${team}`;
+  switch (ev.type) {
+    case 'goal':
+      return { tag: 'Goal', cls: 'goal', text: `${who} score <span class="muted">· confirmed at kick-off ${fmtClock(ev.confirmed)}</span>` };
+    case 'shot':
+      return { tag: 'Shot', cls: `shot ${ev.detail}`, text: `${who} ${playerNum(ev.player)}<span class="muted">· ${SHOT_RESULT[ev.detail] || ev.detail}</span>` };
+    case 'corner': return { tag: 'Corner', cls: 'set', text: `Corner to ${who}` };
+    case 'throw_in': return { tag: 'Throw-in', cls: 'set', text: `Throw-in to ${who}` };
+    case 'goal_kick': return { tag: 'Goal kick', cls: 'set', text: `Goal kick to ${who}` };
+    case 'kickoff': return { tag: 'Kick-off', cls: 'set', text: `Kick-off by ${who}` };
+    default: return { tag: ev.type, cls: '', text: who };
+  }
 }
+
+function renderEvents() {
+  const shown = allEvents.filter(EVENT_FILTERS[eventFilter]).slice(-60).reverse();
+  $('events').innerHTML = shown.length
+    ? shown.map((ev) => {
+      const d = describeEvent(ev);
+      return `<li><time>${fmtClock(ev.clock)}</time><span class="tag ${d.cls}">${d.tag}</span><span>${d.text}</span></li>`;
+    }).join('')
+    : '<li class="empty">No events yet</li>';
+}
+
+$('event-filter').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn) return;
+  eventFilter = btn.dataset.filter;
+  for (const b of $('event-filter').querySelectorAll('button')) {
+    b.setAttribute('aria-pressed', String(b === btn));
+  }
+  renderEvents();
+});
 
 new ResizeObserver(resize).observe(canvas);
 resize();

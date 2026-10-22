@@ -211,6 +211,12 @@ impl Replay {
     /// None once the recording is exhausted, otherwise the period number.
     pub fn sample(&mut self, t: f64, players: &mut Vec<Pos>, ball: &mut V2) -> io::Result<Option<u8>> {
         while self.next.time < t {
+            // Frames stepped over still update where the ball was last seen,
+            // so a coarse output rate cannot lose its final tracked position
+            // (e.g. just inside the goal before tracking drops out).
+            if let Some(b) = self.next.ball {
+                self.last_ball = b;
+            }
             std::mem::swap(&mut self.prev, &mut self.next);
             if !self.read_next()? {
                 return Ok(None);
@@ -262,12 +268,16 @@ Period,Frame,Time [s],Player 4,,
 2,3,0.12,0.1,0.5
 ";
 
-    fn fixture() -> Replay {
-        let dir = std::env::temp_dir().join(format!("pitch-sim-replay-{}", std::process::id()));
+    fn fixture_from(name: &str, home: &str, away: &str) -> Replay {
+        let dir = std::env::temp_dir().join(format!("pitch-sim-{name}-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("G_RawTrackingData_Home_Team.csv"), HOME).unwrap();
-        fs::write(dir.join("G_RawTrackingData_Away_Team.csv"), AWAY).unwrap();
+        fs::write(dir.join("G_RawTrackingData_Home_Team.csv"), home).unwrap();
+        fs::write(dir.join("G_RawTrackingData_Away_Team.csv"), away).unwrap();
         Replay::open(&dir).unwrap()
+    }
+
+    fn fixture() -> Replay {
+        fixture_from("replay", HOME, AWAY)
     }
 
     fn find(players: &[Pos], id: u8) -> Option<V2> {
@@ -297,5 +307,38 @@ Period,Frame,Time [s],Player 4,,
         assert!((p3.x - 0.3 * PITCH_W).abs() < 1e-3 && (p3.y - 0.3 * PITCH_H).abs() < 1e-3);
 
         assert_eq!(r.sample(0.2, &mut players, &mut ball).unwrap(), None);
+    }
+
+    #[test]
+    fn keeps_last_tracked_ball_from_skipped_frames() {
+        // The ball is last seen at x = 0.99 in frame 3, which a coarse
+        // sampling step jumps over before tracking drops out.
+        let home = "\
+,,,Home,,,
+,,,1,,,
+Period,Frame,Time [s],Player1,,Ball,
+1,1,0.04,0.2,0.5,0.90,0.5
+1,2,0.08,0.2,0.5,0.95,0.5
+1,3,0.12,0.2,0.5,0.99,0.5
+1,4,0.16,0.2,0.5,NaN,NaN
+1,5,0.20,0.2,0.5,NaN,NaN
+1,6,0.24,0.2,0.5,NaN,NaN
+";
+        let away = "\
+,,,Away,,,
+,,,2,,,
+Period,Frame,Time [s],Player2,,
+1,1,0.04,0.8,0.5
+1,2,0.08,0.8,0.5
+1,3,0.12,0.8,0.5
+1,4,0.16,0.8,0.5
+1,5,0.20,0.8,0.5
+1,6,0.24,0.8,0.5
+";
+        let mut r = fixture_from("skip", home, away);
+        let (mut players, mut ball) = (Vec::new(), V2::ZERO);
+        r.sample(0.04, &mut players, &mut ball).unwrap();
+        r.sample(0.22, &mut players, &mut ball).unwrap();
+        assert!((ball.x - 0.99 * PITCH_W).abs() < 1e-3, "ball.x = {}", ball.x);
     }
 }

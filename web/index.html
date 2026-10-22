@@ -30,34 +30,38 @@
       </header>
 
       <section class="card">
-        <h2>Possession</h2>
-        <div class="poss-bar"><div id="poss-home" class="home"></div><div id="poss-away" class="away"></div></div>
-        <div class="poss-labels"><span id="poss-home-pct">50%</span><span id="poss-away-pct">50%</span></div>
+        <h2>Match stats</h2>
         <div class="holder" id="holder">Waiting for data…</div>
+        <div class="stats" id="stats"></div>
       </section>
 
       <section class="card">
-        <h2>Penalty boxes</h2>
-        <div class="zones">
-          <div class="zone" id="zone-left_box"><span>Home box</span><strong id="entries-left_box">0</strong><small>entries</small></div>
-          <div class="zone" id="zone-right_box"><span>Away box</span><strong id="entries-right_box">0</strong><small>entries</small></div>
+        <div class="card-head">
+          <h2>Events</h2>
+          <div class="chips" id="event-filter" role="group" aria-label="Filter events">
+            <button type="button" data-filter="all" aria-pressed="true">All</button>
+            <button type="button" data-filter="goals" aria-pressed="false">Goals</button>
+            <button type="button" data-filter="shots" aria-pressed="false">Shots</button>
+            <button type="button" data-filter="setpieces" aria-pressed="false">Set pieces</button>
+          </div>
         </div>
-      </section>
-
-      <section class="card">
-        <h2>Distance covered</h2>
-        <div class="dist-grid">
-          <table id="dist-0"></table>
-          <table id="dist-1"></table>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Events</h2>
         <ol id="events" class="events"><li class="empty">No events yet</li></ol>
       </section>
 
-      <footer class="telemetry">
+      <section class="card">
+        <h2>Top performers</h2>
+        <div class="leaders" id="leaders"></div>
+        <details class="all-players">
+          <summary>All players</summary>
+          <div class="dist-grid">
+            <table id="dist-0"></table>
+            <table id="dist-1"></table>
+          </div>
+        </details>
+      </section>
+
+      <details class="telemetry">
+        <summary>Stream health <span id="t-summary" class="muted"></span></summary>
         <dl>
           <div><dt>Ingest</dt><dd id="t-fps">–</dd></div>
           <div><dt>Packets lost</dt><dd id="t-lost">–</dd></div>
@@ -66,7 +70,7 @@
           <div><dt>Processing</dt><dd id="t-proc">–</dd></div>
           <div><dt>Render</dt><dd id="t-render">–</dd></div>
         </dl>
-      </footer>
+      </details>
     </aside>
   </main>
   <script src="pitch.js"></script>

@@ -31,7 +31,7 @@ const (
 	// shortly before it.
 	mouthDepth  = 0.5   // m beyond/inside the goal line
 	mouthWindow = 120e3 // ms
-	maxEvents   = 50
+	maxEvents   = 400   // a full match has roughly 150 events
 	// A sequence number this far below the last one means the edge restarted.
 	seqRestartGap = 100
 )
@@ -59,12 +59,13 @@ var zones = []Zone{
 var teamNames = [2]string{"Home", "Away"}
 
 type Event struct {
-	Type      string `json:"type"` // "box_entry" or "goal"
+	Type      string `json:"type"` // goal, kickoff, shot, corner, throw_in, goal_kick
 	Clock     int64  `json:"clock"`
 	Zone      string `json:"zone,omitempty"`
 	Team      int    `json:"team"` // team in possession / scoring team, -1 if unknown
 	Player    int    `json:"player,omitempty"`
 	Confirmed int64  `json:"confirmed,omitempty"` // goals: clock of the confirming kick-off
+	Detail    string `json:"detail,omitempty"`    // shots: goal, on_target, off_target, blocked
 }
 
 // goalMouth records the ball's last visit to a goal mouth.
@@ -116,20 +117,21 @@ type StatsOut struct {
 }
 
 type StateMsg struct {
-	Type    string          `json:"type"`
-	Seq     uint64          `json:"seq"`
-	Clock   int64           `json:"clock"` // match time in ms
-	Period  int             `json:"period"`
-	Ball    Point           `json:"ball"`
-	Players []PlayerOut     `json:"players"`
-	Poss    PossOut         `json:"poss"`
-	PossPct [2]float64      `json:"possPct"`
-	Zones   map[string]bool `json:"zones"`
-	Entries map[string]int  `json:"entries"`
-	Score   [2]int          `json:"score"`
-	Events  []Event         `json:"events,omitempty"` // new since the previous message
-	Stats   StatsOut        `json:"stats"`
-	SrvTS   int64           `json:"srvTs"`
+	Type    string            `json:"type"`
+	Seq     uint64            `json:"seq"`
+	Clock   int64             `json:"clock"` // match time in ms
+	Period  int               `json:"period"`
+	Ball    Point             `json:"ball"`
+	Players []PlayerOut       `json:"players"`
+	Poss    PossOut           `json:"poss"`
+	PossPct [2]float64        `json:"possPct"`
+	Zones   map[string]bool   `json:"zones"`
+	Entries map[string]int    `json:"entries"`
+	Score   [2]int            `json:"score"`
+	Tallies map[string][2]int `json:"tallies"`          // per-team counts by event type
+	Events  []Event           `json:"events,omitempty"` // new since the previous message
+	Stats   StatsOut          `json:"stats"`
+	SrvTS   int64             `json:"srvTs"`
 }
 
 type helloMsg struct {
@@ -165,6 +167,12 @@ type Engine struct {
 	score   [2]int
 	events  []Event
 	goals   []Event
+	tallies map[string][2]int
+	restart restartState
+	shot    shotState
+
+	// OnEvent, if set, is called for every detected event (e.g. to log them).
+	OnEvent func(Event)
 
 	period   int
 	mouth    *goalMouth
@@ -211,6 +219,12 @@ func (e *Engine) reset() {
 	e.lastTick = 0
 	e.events = []Event{} // encode as [] rather than null
 	e.goals = []Event{}
+	e.tallies = make(map[string][2]int)
+	for _, t := range tallyTypes {
+		e.tallies[t] = [2]int{}
+	}
+	e.restart = restartState{}
+	e.shot = shotState{last: -shotGap} // allow a shot straight away
 	e.refreshHello()
 }
 
@@ -293,8 +307,10 @@ func (e *Engine) process(f Frame) []byte {
 	e.updateRate(f)
 	e.updatePlayers(f, dt)
 	poss := e.updatePossession(f.Ball, gap)
-	newEvents := e.updateGeofences(f.Ball, clock, poss)
-	newEvents = append(newEvents, e.updateGoals(f, clock)...)
+	e.updateGeofences(f.Ball)
+	newEvents := e.updateGoals(f, clock)
+	newEvents = append(newEvents, e.updateRestarts(f.Ball, clock, dt)...)
+	newEvents = append(newEvents, e.updateShots(f.Ball, clock, newEvents)...)
 	e.recordEvents(newEvents)
 
 	msg := StateMsg{
@@ -309,6 +325,7 @@ func (e *Engine) process(f Frame) []byte {
 		Zones:   e.inZone,
 		Entries: e.entries,
 		Score:   e.score,
+		Tallies: e.tallies,
 		Events:  newEvents,
 		Stats: StatsOut{
 			FPS:          r2(e.fps),
@@ -429,22 +446,16 @@ func (e *Engine) possessionPct() [2]float64 {
 	return [2]float64{home, r2(100 - home)}
 }
 
-func (e *Engine) updateGeofences(ball Point, clock int64, poss PossOut) []Event {
-	var out []Event
+// updateGeofences counts ball entries into each zone. They are frequent, so
+// they are kept as counters rather than reported as events.
+func (e *Engine) updateGeofences(ball Point) {
 	for _, z := range zones {
 		in := z.Contains(ball)
 		if in && !e.inZone[z.Name] {
 			e.entries[z.Name]++
-			ev := Event{Type: "box_entry", Clock: clock, Zone: z.Name, Team: poss.Holder}
-			if poss.Control {
-				ev.Player = poss.Player
-			}
-			out = append(out, ev)
 		}
 		e.inZone[z.Name] = in
 	}
-
-	return out
 }
 
 // updateGoals detects goals. Tracking data has no ball height, so a ball
@@ -484,20 +495,21 @@ func (e *Engine) updateGoals(f Frame, clock int64) []Event {
 		return nil
 	}
 	e.koArmed = false
+	kickoff := Event{Type: "kickoff", Clock: clock, Team: e.nearestTeam(ball)}
 
 	m := e.mouth
 	e.mouth = nil
 	if m == nil || clock-m.clock > mouthWindow {
-		return nil // kick-off at the start of a half
+		return []Event{kickoff} // kick-off at the start of a half
 	}
 	scorer := 0 // Home scores in the right goal
 	if m.left {
 		scorer = 1
 	}
 	e.score[scorer]++
-	ev := Event{Type: "goal", Clock: m.clock, Team: scorer, Confirmed: clock}
-	e.goals = append(e.goals, ev)
-	return []Event{ev}
+	goal := Event{Type: "goal", Clock: m.clock, Team: scorer, Confirmed: clock}
+	e.goals = append(e.goals, goal)
+	return []Event{goal, kickoff}
 }
 
 // teamsInOwnHalves reports whether Home is in the left half and Away in the right.
@@ -514,6 +526,12 @@ func (e *Engine) teamsInOwnHalves() bool {
 }
 
 func (e *Engine) recordEvents(out []Event) {
+	for _, ev := range out {
+		e.tally(ev)
+		if e.OnEvent != nil {
+			e.OnEvent(ev)
+		}
+	}
 	if len(out) > 0 {
 		e.events = append(e.events, out...)
 		if len(e.events) > maxEvents {
